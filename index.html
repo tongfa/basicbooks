@@ -1,0 +1,244 @@
+<html>
+<head>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code&family=Nunito:wght@700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <style>
+    body {
+        font-family: 'Nunito', sans-serif;
+    }
+    h1 {
+        margin-bottom: 0.1rem;
+    }
+    table.ledger {
+        border-spacing: 0;
+    }
+    table.ledger th {
+        font-family: 'Nunito', sans-serif;
+        font-size: 1.6rem;
+        border-bottom: 1px solid black;
+        margin: 2em;
+    }
+    table.ledger th:nth-child(1) {
+        min-width: 7rem;
+    }
+    table.ledger th:nth-child(2) {
+        min-width: 20rem;
+    }
+    table.ledger th:nth-child(3) {
+        min-width: 5rem;
+    }
+    table.ledger th:nth-child(4) {
+        min-width: 5rem;
+    }
+    table.ledger th:nth-child(5) {
+        min-width: 5rem;
+    }
+    table.ledger td {
+        font-family: 'Fira Code', monospace;
+        padding: 0 1rem;
+    }
+    td:nth-child(3) > div, td:nth-child(4) > div, td:nth-child(5) > div {
+        display: flex;
+        justify-content: space-between;
+    }
+    td:nth-child(3) > div > span:nth-child(1), td:nth-child(4) > div > span:nth-child(1), td:nth-child(5) > div > span:nth-child(1) {
+        margin-right: 0.4rem;
+    }
+    .highlight {
+        background-color: rgb(255, 223, 44);
+    }
+    </style>
+</head>
+
+<div id="app">
+    <h1>Regular Account</h1>
+    <div>
+        <entries :entries="regular"/>
+    </div>
+    <h1>Other Account</h1>
+    <div>
+        <entries :entries="gaming"/>
+    </div>
+</div>
+
+<script>
+    const { defineComponent, createApp } = Vue
+
+    const options = {
+        showCurrencySymbol: '',
+    }
+
+    let clearHighlight = () => {};
+
+    function formatMoney(v) {
+        const minimumFractionDigits = 2
+        return Intl.NumberFormat(undefined, {minimumFractionDigits}).format(v)
+    }
+
+    const app = createApp({
+        data() {
+            const process = (entries) => {
+                let balance;
+                return entries.map(e => {
+                const amount = Number(e.amount.replace(/,/g, ''))
+                balance = balance === undefined ? amount :
+                    ( balance + amount * (e.direction === 'in' ? 1 : -1));
+                return {
+                    ...e,
+                    amount,
+                    balance,
+                }
+            })
+            }
+            const regular = process([
+                {
+                    direction: 'opening-balance',
+                    amount: '12.43',
+                    description: 'Opening Balance',
+                    date: '2022-JUN-01',
+                },
+                {
+                    direction: 'in',
+                    amount: '10.00',
+                    description: 'Refund',
+                    date: '2022-JUN-01',
+                },
+                {
+                    direction: 'out',
+                    amount: '101.00',
+                    description: 'Supplies',
+                    date: '2022-JUN-01',
+                },
+                {
+                    direction: 'out',
+                    amount: '1,010.00',
+                    description: 'Public speaker',
+                    date: '2022-JUL-01',
+                },
+                {
+                    direction: 'out',
+                    amount: '10,100.01',
+                    description: 'Contractor',
+                    date: '2022-AUG-01',
+                },
+            ])
+            const gaming = process([
+            {
+                    direction: 'opening-balance',
+                    amount: '12.43',
+                    description: 'Opening Balance',
+                    date: '2022-JUN-01',
+                },
+                {
+                    direction: 'in',
+                    amount: '10.00',
+                    description: 'refund',
+                    date: '2022-JUN-01',
+                },
+                {
+                    direction: 'out',
+                    amount: '101.00',
+                    description: 'supplies',
+                    date: '2022-JUN-01',
+                },
+                {
+                    direction: 'out',
+                    amount: '1,010.00',
+                    description: 'public speaker',
+                    date: '2022-JUL-01',
+                },
+                {
+                    direction: 'out',
+                    amount: '10,100.01',
+                    description: 'contractor',
+                    date: '2022-AUG-01',
+                },
+            ])
+            return {
+                regular,
+                gaming,
+            }
+        }
+    })
+    app.component('entry', {
+        props: ['date', 'description', 'direction', 'amount', 'balance'],
+        computed: {
+            inAmount() {
+                return this.direction === 'in' ? formatMoney(this.amount) : '';
+            },
+            inSymbol() {
+                return this.direction === 'in' ? options.showCurrencySymbol : '';
+            },
+            outAmount() {
+                return this.direction === 'out' ? formatMoney(this.amount) : '';
+            },
+            outSymbol() {
+                return this.direction === 'out' ? options.showCurrencySymbol : '';
+            },
+            balanceAmount() {
+                return formatMoney(this.balance)
+            },
+            currencySymbol() {
+                return options.showCurrencySymbol;
+            }
+        },
+        methods: {
+            clickRow(e) {
+                clearHighlight();
+                this.rowSelected = true;
+                clearHighlight = () => {
+                    this.rowSelected = false;
+                }
+            },
+            clickBalance(e) {
+                clearHighlight();
+                this.balanceSelected = true;
+                clearHighlight = () => {
+                    this.balanceSelected = false;
+                }
+            },
+        },
+        data() {
+            return {
+                balanceSelected: false,
+                rowSelected: false,
+            }
+        },
+        template: `
+<tr @click.stop="clickRow(e)" :class="{highlight: rowSelected}">
+    <td>{{date}}</td>
+    <td>{{description}}</td>
+    <td><div><span>{{inSymbol}}</span><span>{{inAmount}}</span></div></td>
+    <td><div><span>{{outSymbol}}</span><span>{{outAmount}}</span></div></td>
+    <td @click.stop="clickBalance(e)" :class="{highlight: balanceSelected}">
+        <div><span>{{ currencySymbol }}</span><span>{{balanceAmount}}</span></div>
+    </td>
+</tr>`
+    });
+    app.component('entries' , {
+        props: ['entries'],
+        methods: {
+            click() {
+                clearHighlight();
+            }
+        },
+        template: `
+<div @click="click()">
+    <table class="ledger"><tr><th>date</th><th>description</th><th>in</th><th>out</th><th>balance</th></tr>
+        <template v-for="e in entries">
+            <entry
+                :date="e.date"
+                :description="e.description"
+                :direction="e.direction"
+                :amount="e.amount"
+                :balance="e.balance"
+            />
+        </template>
+    </table>
+</div>`
+    });
+  app.mount('#app')
+</script>
+</html>
