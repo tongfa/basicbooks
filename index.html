@@ -18,7 +18,6 @@
         font-family: 'Nunito', sans-serif;
         font-size: 1.6rem;
         border-bottom: 1px solid black;
-        margin: 2em;
     }
     table.ledger th:nth-child(1) {
         min-width: 7rem;
@@ -37,7 +36,7 @@
     }
     table.ledger td {
         font-family: 'Fira Code', monospace;
-        padding: 0 1rem;
+        padding: 0.1rem 1rem;
     }
     td:nth-child(3) > div, td:nth-child(4) > div, td:nth-child(5) > div {
         display: flex;
@@ -64,51 +63,59 @@
 </div>
 
 <script>
+    /* configuration stuff */
+    const decimalPlaces = 2;
+    
     const { defineComponent, createApp } = Vue
-
+    
     const options = {
         showCurrencySymbol: '',
     }
-
+    
     let clearHighlight = () => {};
-
-    function formatMoney(v) {
-        const minimumFractionDigits = 2
-        return Intl.NumberFormat(undefined, {minimumFractionDigits}).format(v)
+    
+    function formatAmount(v) {
+        const minimumFractionDigits = decimalPlaces
+        const decimalizedString = `${v}E-${decimalPlaces}`
+        return Intl.NumberFormat(undefined, {minimumFractionDigits}).format(decimalizedString)
     }
-
+    
     function textToAmount(t) {
-	return Number(t.replace(/,/g, ''));
+        if (t.indexOf('.') > -1) {
+            return BigInt(t.replace(/[\.,]/g, ''))
+        } else {
+            return BigInt(t.replace(/,/g, '')) * Math.pow(10, decimalPlaces);
+        }
     }
-
+    
     const app = createApp({
         data() {
             const process = (entries) => {
-		let balanced = false;
+                let balanced = false;
                 let balance;
                 return entries.map(e => {
-		    if (e.direction === 'closing-balance') {
-			if (balanced) {
-			    throw new Error('already balanced');
-			}
-			balanced = true;
-			const expectedAmount = textToAmount(e.amount)
-			const delta = balance - expectedAmount;
-			return {
-			    ...e,
-			    balance,
-			    description: delta >= 0.01 ? `${e.description} off by ${formatMoney(delta)}` : e.description,
-			}
-		    }
+                    if (e.direction === 'closing-balance') {
+                        if (balanced) {
+                            throw new Error('already balanced');
+                        }
+                        balanced = true;
+                        const expectedAmount = textToAmount(e.amount)
+                        const delta = expectedAmount - balance;
+                        return {
+                            ...e,
+                            balance,
+                            description: delta ? `${e.description} ${formatAmount(expectedAmount)} off by ${formatAmount(delta)}` : e.description,
+                        }
+                    }
                     const amount = textToAmount(e.amount)
                     balance = balance === undefined ? amount :
-			( balance + amount * (e.direction === 'in' ? 1 : -1));
+                        ( balance + amount * (e.direction === 'in' ? 1n : -1n));
                     return {
-			...e,
-			amount,
-			balance,
+                        ...e,
+                        amount,
+                        balance,
                     }
-		})
+                })
             }
             const regular = process([
                 {
@@ -143,7 +150,7 @@
                 },
             ])
             const gaming = process([
-            {
+                {
                     direction: 'opening-balance',
                     amount: '12.43',
                     description: 'Opening Balance',
@@ -163,8 +170,8 @@
                 },
                 {
                     direction: 'closing-balance',
-                    amount: '1,145.99',
-                    description: 'Closing Balance',
+                    amount: '1,146.01',
+                    description: 'Closing Balance intentionally',
                     date: '2022-JUN-30',
                 },
             ])
@@ -178,19 +185,19 @@
         props: ['date', 'description', 'direction', 'amount', 'balance'],
         computed: {
             inAmount() {
-                return this.direction === 'in' ? formatMoney(this.amount) : '';
+                return this.direction === 'in' ? formatAmount(this.amount) : '';
             },
             inSymbol() {
                 return this.direction === 'in' ? options.showCurrencySymbol : '';
             },
             outAmount() {
-                return this.direction === 'out' ? formatMoney(this.amount) : '';
+                return this.direction === 'out' ? formatAmount(this.amount) : '';
             },
             outSymbol() {
                 return this.direction === 'out' ? options.showCurrencySymbol : '';
             },
             balanceAmount() {
-                return formatMoney(this.balance)
+                return formatAmount(this.balance)
             },
             currencySymbol() {
                 return options.showCurrencySymbol;
@@ -251,6 +258,6 @@
     </table>
 </div>`
     });
-  app.mount('#app')
-</script>
+    app.mount('#app')
+    </script>
 </html>
