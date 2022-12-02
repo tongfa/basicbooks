@@ -77,51 +77,69 @@
         return Intl.NumberFormat(undefined, {minimumFractionDigits}).format(v)
     }
 
+    function textToAmount(t) {
+	return Number(t.replace(/,/g, ''));
+    }
+
     const app = createApp({
         data() {
             const process = (entries) => {
+		let balanced = false;
                 let balance;
                 return entries.map(e => {
-                const amount = Number(e.amount.replace(/,/g, ''))
-                balance = balance === undefined ? amount :
-                    ( balance + amount * (e.direction === 'in' ? 1 : -1));
-                return {
-                    ...e,
-                    amount,
-                    balance,
-                }
-            })
+		    if (e.direction === 'closing-balance') {
+			if (balanced) {
+			    throw new Error('already balanced');
+			}
+			balanced = true;
+			const expectedAmount = textToAmount(e.amount)
+			const delta = balance - expectedAmount;
+			return {
+			    ...e,
+			    balance,
+			    description: delta >= 0.01 ? `${e.description} off by ${formatMoney(delta)}` : e.description,
+			}
+		    }
+                    const amount = textToAmount(e.amount)
+                    balance = balance === undefined ? amount :
+			( balance + amount * (e.direction === 'in' ? 1 : -1));
+                    return {
+			...e,
+			amount,
+			balance,
+                    }
+		})
             }
             const regular = process([
                 {
                     direction: 'opening-balance',
-                    amount: '12.43',
+                    amount: '1234.56',
                     description: 'Opening Balance',
                     date: '2022-JUN-01',
                 },
                 {
                     direction: 'in',
-                    amount: '10.00',
+                    amount: '10.10',
                     description: 'Refund',
                     date: '2022-JUN-01',
                 },
                 {
                     direction: 'out',
-                    amount: '101.00',
+                    amount: '2.02',
                     description: 'Supplies',
                     date: '2022-JUN-01',
                 },
                 {
                     direction: 'out',
-                    amount: '1,010.00',
+                    amount: '1,010.10',
                     description: 'Public speaker',
                     date: '2022-JUL-01',
                 },
                 {
-                    direction: 'out',
-                    amount: '10,100.01',
-                    description: 'Contractor',
-                    date: '2022-AUG-01',
+                    direction: 'closing-balance',
+                    amount: '232.54',
+                    description: 'Closing Balance',
+                    date: '2022-JUL-31',
                 },
             ])
             const gaming = process([
@@ -133,8 +151,8 @@
                 },
                 {
                     direction: 'in',
-                    amount: '10.00',
-                    description: 'refund',
+                    amount: '1,234.56',
+                    description: 'fund raiser',
                     date: '2022-JUN-01',
                 },
                 {
@@ -144,16 +162,10 @@
                     date: '2022-JUN-01',
                 },
                 {
-                    direction: 'out',
-                    amount: '1,010.00',
-                    description: 'public speaker',
-                    date: '2022-JUL-01',
-                },
-                {
-                    direction: 'out',
-                    amount: '10,100.01',
-                    description: 'contractor',
-                    date: '2022-AUG-01',
+                    direction: 'closing-balance',
+                    amount: '1,145.99',
+                    description: 'Closing Balance',
+                    date: '2022-JUN-30',
                 },
             ])
             return {
