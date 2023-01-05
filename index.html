@@ -8,7 +8,7 @@
     body {
         font-family: 'Nunito', sans-serif;
     }
-    h1 {
+    h1, h2 {
         margin-bottom: 0.1rem;
     }
     table.ledger {
@@ -38,6 +38,10 @@
         font-family: 'Fira Code', monospace;
         padding: 0.1rem 1rem;
     }
+    table.ledger td.note {
+        font-family: 'Nunito', sans-serif;
+        padding: 1rem 1rem 0.1rem 0.1rem;
+    }
     td:nth-child(3) > div, td:nth-child(4) > div, td:nth-child(5) > div {
         display: flex;
         justify-content: space-between;
@@ -48,15 +52,33 @@
     .highlight {
         background-color: rgb(255, 223, 44);
     }
+    .accrued {
+        color: rgb(153, 30, 205);
+    }
+    .title {
+        text-align: center;
+    }
+    .in-a-bit {
+        width: fit-content;
+        margin: 0 auto 0 50px;
+    }
+    #app {
+        width: fit-content;
+        margin: 0 auto;
+    }
     </style>
 </head>
 
 <div id="app">
-    <h1>Regular Account</h1>
+    <h1 class="title">
+        <div>Treasurer's report</div>
+        <div>November 2022</div>
+    </h1>
+    <h2>Regular Account</h2>
     <div>
         <entries :entries="regular"/>
     </div>
-    <h1>Other Account</h1>
+    <h2>Gaming Account</h2>
     <div>
         <entries :entries="gaming"/>
     </div>
@@ -65,21 +87,21 @@
 <script>
     /* configuration stuff */
     const decimalPlaces = 2;
-    
+
     const { defineComponent, createApp } = Vue
-    
+
     const options = {
         showCurrencySymbol: '',
     }
-    
+
     let clearHighlight = () => {};
-    
+
     function formatAmount(v) {
         const minimumFractionDigits = decimalPlaces
         const decimalizedString = `${v}E-${decimalPlaces}`
         return Intl.NumberFormat(undefined, {minimumFractionDigits}).format(decimalizedString)
     }
-    
+
     function textToAmount(t) {
         if (t.indexOf('.') > -1) {
             return BigInt(t.replace(/[\.,]/g, ''))
@@ -87,31 +109,50 @@
             return BigInt(t.replace(/,/g, '')) * Math.pow(10, decimalPlaces);
         }
     }
-    
+
     const app = createApp({
         data() {
             const process = (entries) => {
-                let balanced = false;
+                let balanced = {};
                 let balance;
                 return entries.map(e => {
-                    if (e.direction === 'closing-balance') {
-                        if (balanced) {
+                    if ( e.transaction === 'note') {
+                      return e;
+                    }
+                    const accrued = e.transaction.indexOf('accrued') > -1;
+                    if (e.transaction.indexOf('closing-balance') > -1) {
+                        if (balanced[e.transaction]) {
                             throw new Error('already balanced');
                         }
-                        balanced = true;
+                        balanced[e.transaction] = true;
                         const expectedAmount = textToAmount(e.amount)
                         const delta = expectedAmount - balance;
                         return {
                             ...e,
+                            accrued,
                             balance,
                             description: delta ? `${e.description} ${formatAmount(expectedAmount)} off by ${formatAmount(delta)}` : e.description,
                         }
                     }
                     const amount = textToAmount(e.amount)
-                    balance = balance === undefined ? amount :
-                        ( balance + amount * (e.direction === 'in' ? 1n : -1n));
+                    if (e.transaction === 'cash-opening-balance') {
+                      balance = amount;
+                      return {
+                        ...e,
+                        accrued,
+                        amount,
+                        balance,
+                      }
+                    }
+                    if (balance === undefined) {
+                        throw new Error('missing initial cash-opening-balance transaction');
+                    }
+                    const direction = e.transaction.indexOf('in') > -1 ? 'in' : 'out';
+                    balance = balance + amount * (direction === 'in' ? 1n : -1n);
                     return {
                         ...e,
+                        direction,
+                        accrued,
                         amount,
                         balance,
                     }
@@ -119,70 +160,101 @@
             }
             const regular = process([
                 {
-                    direction: 'opening-balance',
+                    transaction: 'cash-opening-balance',
                     amount: '1234.56',
                     description: 'Opening Balance',
                     date: '2022-JUN-01',
                 },
                 {
-                    direction: 'in',
+                    transaction: 'in',
                     amount: '10.10',
                     description: 'Refund',
                     date: '2022-JUN-01',
                 },
                 {
-                    direction: 'out',
+                    transaction: 'out',
                     amount: '2.02',
                     description: 'Supplies',
                     date: '2022-JUN-01',
                 },
                 {
-                    direction: 'out',
+                    transaction: 'out',
                     amount: '1,010.10',
                     description: 'Public speaker',
                     date: '2022-JUL-01',
                 },
                 {
-                    direction: 'closing-balance',
+                  transaction: 'closing-balance',
                     amount: '232.54',
                     description: 'Closing Balance',
                     date: '2022-JUL-31',
                 },
+                {
+                    transaction: 'note',
+                    description: 'Outstanding Transactions',
+                    accrued: true,
+                },
+                {
+                    transaction: 'accrued-out',
+                    amount: '12.43',
+                    description: 'staff appreciation',
+                    date: '2022-JAN-01',
+                },
+                {
+                    transaction: 'accrued-in',
+                    amount: '321.01',
+                    description: 'Grant',
+                    date: '2022-OCT-27',
+                },
+                {
+                    transaction: 'accrued-closing-balance',
+                    amount: '10377.81',
+                    description: 'Balance Outstanding',
+                    date: '2022-NOV-30',
+                },
             ])
             const gaming = process([
                 {
-                    direction: 'opening-balance',
+                    transaction: 'cash-opening-balance',
                     amount: '12.43',
                     description: 'Opening Balance',
                     date: '2022-JUN-01',
                 },
                 {
-                    direction: 'in',
+                    transaction: 'in',
                     amount: '1,234.56',
                     description: 'fund raiser',
                     date: '2022-JUN-01',
                 },
                 {
-                    direction: 'out',
+                    transaction: 'out',
                     amount: '101.00',
                     description: 'supplies',
                     date: '2022-JUN-01',
                 },
                 {
-                    direction: 'closing-balance',
+                    transaction: 'closing-balance',
                     amount: '1,146.01',
                     description: 'Closing Balance intentionally',
                     date: '2022-JUN-30',
                 },
             ])
+
             return {
                 regular,
                 gaming,
             }
         }
+      })
+    app.component('note', {
+      props: ['description'],
+      template: `
+<tr>
+    <td class="note accrued" colspan="5">{{description}}</td>
+</tr>`
     })
     app.component('entry', {
-        props: ['date', 'description', 'direction', 'amount', 'balance'],
+        props: ['date', 'description', 'direction', 'amount', 'balance', 'accrued'],
         computed: {
             inAmount() {
                 return this.direction === 'in' ? formatAmount(this.amount) : '';
@@ -226,11 +298,11 @@
             }
         },
         template: `
-<tr @click.stop="clickRow(e)" :class="{highlight: rowSelected}">
+<tr @click.stop="clickRow(e)" :class="{accrued: accrued, highlight: rowSelected}">
     <td>{{date}}</td>
     <td>{{description}}</td>
-    <td><div><span>{{inSymbol}}</span><span>{{inAmount}}</span></div></td>
-    <td><div><span>{{outSymbol}}</span><span>{{outAmount}}</span></div></td>
+    <td @click.stop="clickBalance(e)"><div><span>{{inSymbol}}</span><span>{{inAmount}}</span></div></td>
+    <td @click.stop="clickBalance(e)"><div><span>{{outSymbol}}</span><span>{{outAmount}}</span></div></td>
     <td @click.stop="clickBalance(e)" :class="{highlight: balanceSelected}">
         <div><span>{{ currencySymbol }}</span><span>{{balanceAmount}}</span></div>
     </td>
@@ -244,15 +316,21 @@
             }
         },
         template: `
-<div @click="click()">
+<div class="in-a-bit" @click="click()">
     <table class="ledger"><tr><th>date</th><th>description</th><th>in</th><th>out</th><th>balance</th></tr>
         <template v-for="e in entries">
-            <entry
-                :date="e.date"
-                :description="e.description"
-                :direction="e.direction"
-                :amount="e.amount"
-                :balance="e.balance"
+          <note
+              v-if="e.transaction === 'note'"
+              :description="e.description"
+            />
+          <entry
+              v-else
+              :date="e.date"
+              :description="e.description"
+              :direction="e.direction"
+              :amount="e.amount"
+              :accrued="e.accrued"
+              :balance="e.balance"
             />
         </template>
     </table>
