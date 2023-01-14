@@ -1,0 +1,459 @@
+<html>
+<head>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code&family=Nunito:wght@700&display=swap" rel="stylesheet">
+    <style>
+    body {
+        font-family: 'Nunito', sans-serif;
+    }
+    body {
+        width: fit-content;
+        margin: 0 auto;
+    }
+    .marked {
+        font-weight: bold;
+        color: red;
+    }
+    </style>
+</head>
+
+<script class="framework">
+const { $component, $attributeDirective, $mountApp } = (function() {
+    const HTML_TAG_LIST = [
+        'BODY', 'DIV', 'TEMPLATE', 'TABLE', 'TR', 'TH', 'TD', 'SPAN',
+    ]
+
+    const components = {};
+    const attributeDirectives = [];
+    const attributeNodeGeneratingDirectives = [];
+
+    const addIdsToTemplate = (templateId) => {
+        let idCount = 0;
+        const recurse = (element) => {
+            if (element.nodeName === '#document-fragment') {
+                if (element.childElementCount !== 1) {
+                    throw new Error('template elements must have one child')
+                }
+                recurse(element.children[0])
+            } else {
+                const newElementId = templateId + '$' + ++idCount;
+                element.id = newElementId;
+                for (child of element.children) {
+                    recurse(child)
+                }
+            }
+        }
+        const template = document.getElementById(templateId)
+        if (! template) {
+            throw new Error(`cannot find template with id: ${component.templateId}`)
+        }
+        recurse(template.content)
+    }
+
+    const $component = ({name, templateId, initializer, data} = {}) => {
+        if (! name) { throw new Error('Component definition must define a name') };
+        if (! templateId) {
+            templateId = name;
+        }
+        if (! initializer) {
+            initializer = () => {}
+        }
+        components[name] = {name, templateId, initializer, data};
+        addIdsToTemplate(templateId);
+    }
+
+    const $attributeDirective = ({test, processor, options} = {}) => {
+        if (! test) { throw new Error('Attribute directive definition must define a test') };
+        if (! processor) { throw new Error('Attribute directive definition must define a processor') };
+        /* unshift so last one wins when running attributeTest */
+        if (options?.generatesNodes) {
+            attributeNodeGeneratingDirectives.unshift({test, processor});
+        } else {
+            attributeDirectives.unshift({test, processor});
+        }
+    }
+
+    const scanElementProps = (element, data) => {
+        // scan for props
+        const props = {};
+        for (attribute of element.attributes) {
+            if (attribute.name.startsWith(':')) {
+                const key = attribute.name.substr(1);
+                props[key] = data[attribute.value];
+            }
+        }
+        return { props }
+    }
+
+    const indexOf2 = (haystack, needle, pos = 0) => {
+        while (true) {
+            const index = haystack.indexOf(needle, pos);
+            if (index === -1) {
+                return -1;
+            }
+            if (haystack[index + 1] === needle) {
+                return index;
+            }
+            pos = index + 2;
+        }
+    }
+
+    const evaluate = (data, expression) => {
+        const keys = []
+        const values = []
+        for (datumKey in data) {
+            keys.push(datumKey)
+            values.push(data[datumKey])
+        }
+
+        const value = Function(...keys, `"use strict"; return ${expression}`)(...values)
+        return value
+    }
+
+    const processTextNode = (node, newNode, data) => {
+        let text = '';
+        let pos = 0;
+        while (true) {
+            const leftBraces = indexOf2(node.textContent, '{', pos);
+            const rightBraces = indexOf2(node.textContent, '}', pos + 2);
+            if (leftBraces !== -1 && rightBraces !== -1) {
+                text += node.textContent.substr(pos, leftBraces - pos);
+                const expression = node.textContent.substr(leftBraces + 2, rightBraces - leftBraces - 2);
+                text += evaluate(data, expression)
+                pos += rightBraces + 2;
+            } else {
+                text += node.textContent.substr(pos, node.textContent.length - pos);
+                newNode.textContent = text;
+                break;
+            }
+        }
+        return newNode;
+    }
+
+    const processTemplateElement = (templateNode, data) => {
+        if (templateNode.nodeName === '#text') {
+            const newNode = templateNode.cloneNode()
+            return [processTextNode(templateNode, newNode, data)]
+        }
+
+        let newNodes;
+        let skipChildren = false;
+
+        /* first must run directives that are capable of generating multiple nodes, $for is the only one at the moment */
+        for (attribute of templateNode.attributes) {
+            for (atrributeDirective of attributeNodeGeneratingDirectives) {
+                if (atrributeDirective.test(attribute)) {
+                    if ( newNodes !== undefined) {
+                        throw new Error('two new node generating directives ran, yikes!');
+                    }
+                    const { skipProcessingFurtherChildren, generatedNodes } = atrributeDirective.processor(
+                        { evaluate, processTemplateElement },
+                        templateNode, attribute, data)
+                    newNodes = generatedNodes
+                    skipChildren ||= skipProcessingFurtherChildren
+                }
+            }
+        }
+
+        if (newNodes === undefined) {
+            newNodes = [templateNode.cloneNode()]
+        }
+
+        for (attribute of templateNode.attributes) {
+            for (atrributeDirective of attributeDirectives) {
+                if (atrributeDirective.test(attribute)) {
+                    for (const newNode of newNodes) {
+                        const { skipProcessingFurtherChildren } = atrributeDirective.processor(
+                            { evaluate, processTemplateElement },
+                            templateNode, newNode, attribute, data)
+                        skipChildren ||= skipProcessingFurtherChildren
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (! skipChildren ) {
+            for (const newNode of newNodes) {
+                for (const childNode of templateNode.childNodes) {
+                    const newChildren = processTemplateElement(childNode, data)
+                    for (const newChild of newChildren) {
+                        newNode.appendChild(newChild)
+                    }
+                }
+            }
+        }
+
+        return newNodes.map(newNode => HTML_TAG_LIST.includes(newNodes[0].tagName) ? newNode : mount(newNode, data))
+    }
+
+    const processTemplate = (element, data) => {
+        if (element.nodeName === '#document-fragment') {
+            if (element.childElementCount !== 1) {
+                throw new Error('template elements must have one child')
+            }
+            return processTemplate(element.children[0], data)
+        } else {
+            return processTemplateElement(element, data)
+        }
+    }
+
+    /* mounts a component */
+    const mount = (element, data) => {
+        const component = components[element.localName];
+        if (! component) { throw new Error(`Undefined component: ${element.localName}`) }
+        const template = document.getElementById(component.templateId)
+        if (! template) {
+            throw new Error(`cannot find template with id: ${component.templateId}`)
+        }
+        const childElements = processTemplate(template.content, {...data, ...component.data})
+        for (child of childElements) {
+            element.appendChild(child)
+        }
+        return element
+    }
+
+    /* mounts an app */
+    const $mountApp = (element, data) => {
+        const {props} = scanElementProps(element, data)
+        mount(element, {...data, ...props})
+    }
+
+    return {
+        $component,
+        $attributeDirective,
+        $mountApp,
+    }
+})()
+</script>
+
+<script class="$attrDirective">
+$attributeDirective({
+    test: (attribute) => attribute.name.startsWith('$attr:'),
+    processor: ($, node, newNode, attribute, data) => {
+        const attrKey = attribute.name.substr('$attr:'.length)
+        const expression = attribute.value
+        const value = $.evaluate(data, expression)
+        newNode.setAttribute(attrKey, value)
+        return {};
+    }
+})
+</script>
+
+<script class="$eventDirective">
+$attributeDirective({
+    test: (attribute) => attribute.name.startsWith('$event:'),
+    processor: ($, node, newNode, attribute, data) => {
+        const eventName = attribute.name.substr('$event:'.length);
+        const handler = () => { $.evaluate(data, attribute.value) }
+        newNode.addEventListener(eventName, handler);
+        return {};
+    }
+})
+</script>
+
+<script class="$forDirective">
+$attributeDirective({
+    options: { generatesNodes: true },
+    test: (attribute) => attribute.name === '$for',
+    processor: ($, node, attribute, data) => {
+        const [iter, op, ...c] = attribute.value.split(' ')
+        const collection = c.join(' ')
+        const generatedNodes = []
+        const buildChildren = (newData) => {
+            newData = { ...data }
+            newData[iter] = x
+            const newNode = node.cloneNode()
+            for (childElement of node.childNodes) {
+                const newChildren = $.processTemplateElement(childElement, newData)
+                for (const newChild of newChildren) {
+                    newNode.appendChild(newChild);
+                }
+            }
+            generatedNodes.push(newNode)
+        }
+        if (op === 'in') {
+            /* untested */
+            for (x in $.evaluate(data, collection)) {
+                buildChildren(x)
+            }
+        } else if (op === 'of') {
+            for (x of $.evaluate(data, collection)) {
+                buildChildren(x)
+            }
+        }
+
+        return {skipProcessingFurtherChildren: true, generatedNodes}
+    }
+})
+</script>
+
+<script class="$ifDirective">
+(function() {
+    const $ifScopes = {}
+    $attributeDirective({
+        test: (attribute) => ['$if', '$else-if', '$else'].indexOf(attribute.name) > -1,
+        processor: ($, node, newNode, attribute, data) => {
+            const scope = node.parentElement.id
+            const expression = attribute.value
+            switch(attribute.name) {
+                case '$if': {
+                    const value = $.evaluate(data, expression)
+                    $ifScopes[scope] = { value }
+                    return value ? {} : {skipProcessingFurtherChildren: true}
+                }
+                case '$else-if': {
+                    if ($ifScopes[scope] === undefined) {
+                        throw new Error('$else-if without $if')
+                    }
+                    if ($ifScopes[scope].value) {
+                        return {skipProcessingFurtherChildren: true};
+                    }
+                    const value = $.evaluate(data, expression)
+                    $ifScopes[scope].value ||= value
+                    return value ? {} : {skipProcessingFurtherChildren: true}
+                }
+                default:
+                case '$else': {
+                    if ($ifScopes[scope] === undefined) {
+                        throw new Error('$else without $if')
+                    }
+                    const value = ! $ifScopes[scope].value
+                    $ifScopes[scope] = undefined
+                    return value ? {} : {skipProcessingFurtherChildren: true}
+                }
+            }
+        }
+    })
+}
+)();
+</script>
+
+<body>
+    <h1 class="title">
+        <div>Tests</div>
+    </h1>
+    <h2>attribute interpolation</h2>
+    <attribute-test class="test"></attribute-test>
+    <h2>text interpolation</h2>
+    <text-test class="test"></text-test>
+    <h2>$if</h2>
+    <if-test class="test"></if-test>
+    <h2>$if $else-if $else</h2>
+    <if-else-if-else-test class="test"></if-else-if-else-test>
+    <h2>$for</h2>
+    <for-test class="test"></for-test>
+    <h2>click</h2>
+    <event-test class="test"></event-test>
+</body>
+
+<template id="attribute-test">
+    <div>
+        <div $attr:class="'marked'">this should be bolder and red</div>
+        <div>compared to this</div>
+        <div $attr:class="colorRed === 'red' ? 'marked': ''">this should be red too</div>
+    </div>
+</template>
+<script class="attribute-test">
+    $component({
+        name: 'attribute-test'
+    })
+</script>
+
+<template id="text-test">
+    <div>
+        <div>{{ 'do you see what I see' }}</div>
+        <div>my favorite color is {{ colorRed }}</div>
+    </div>
+</template>
+<script class="test-test">
+    $component({
+        name: 'text-test'
+    })
+</script>
+
+<template id="$if-test">
+    <div>
+        <span $if="true">see this</span>
+        <span $if="false">do not see this</span>
+        <span $else>and I should see this</span>
+    </div>
+</template>
+<script class="$if-test">
+    $component({
+        name: 'if-test',
+        templateId: '$if-test'
+    })
+</script>
+
+<template id="$if-$else-if-$else-test">
+    <div>
+        <div>
+            <span $if="true">see this</span>
+            <span $else-if="true">do not see this</span>
+            <span $else>do not see this</span>
+        </div>
+        <div>
+            <span $if="false">do not see this</span>
+            <span $else-if="true">see this</span>
+            <span $else>do not see this</span>
+        </div>
+        <div>
+            <span $if="true">see this</span>
+            <span $else-if="false">do not see this</span>
+            <span $else>see this</span>
+        </div>
+    </div>
+</template>
+<script class="$if-$else-if-$else-test">
+    $component({
+        name: 'if-else-if-else-test',
+        templateId: '$if-$else-if-$else-test'
+    })
+</script>
+
+
+<template id="$for-test">
+    <div $for="count of [1, 2, 3, 4]">
+        I should see 4 of these, numero {{ count }}
+    </div>
+</template>
+<script>
+    $component({
+        name: 'for-test',
+        templateId: '$for-test'
+    })
+</script>
+
+<template id="$event-test">
+    <div>
+        <span $event:click="foo()">click this</span>
+    </div>
+</template>
+<script>
+    $component({
+        name: 'event-test',
+        templateId: '$event-test',
+        data: {
+            foo() { alert('fired click handler') }
+        },
+    })
+</script>
+</body>
+
+<script>
+    const start = () => {
+        const data = {
+            colorRed: 'red'
+        };
+        const tests = document.getElementsByClassName('test')
+        for (test of tests) {
+            $mountApp(test, data)
+            console.log('mounted app', test)
+        }
+    }
+    start();
+</script>
+
+</html>
