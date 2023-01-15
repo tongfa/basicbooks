@@ -19,295 +19,291 @@
 </head>
 
 <script class="framework">
-const { $component, $attributeDirective, $mount } = (function() {
-    const HTML_TAG_LIST = [
-        'BODY', 'DIV', 'TEMPLATE', 'TABLE', 'TR', 'TH', 'TD', 'SPAN',
-    ]
+    const { $component, $attributeDirective, $mount } = (function() {
+        const HTML_TAG_LIST = [
+            'BODY', 'DIV', 'TEMPLATE', 'TABLE', 'TR', 'TH', 'TD', 'SPAN',
+        ]
 
-    const components = {};
-    const attributeDirectives = [];
-    const attributeNodeGeneratingDirectives = [];
+        const components = {}
+        const attributeDirectives = []
+        const attributeNodeGeneratingDirectives = []
+        const attributeAppEntryDirectives = []
 
-    const addIdsToTemplate = (templateId) => {
-        let idCount = 0;
-        const recurse = (element) => {
-            if (element.nodeName === '#document-fragment') {
-                if (element.childElementCount !== 1) {
-                    throw new Error('template elements must have one child')
-                }
-                recurse(element.children[0])
-            } else {
+        const addIdsToTemplate = (templateId) => {
+            let idCount = 0;
+            const recurse = (element) => {
                 const newElementId = templateId + '$' + ++idCount;
                 element.id = newElementId;
                 for (child of element.children) {
                     recurse(child)
                 }
             }
-        }
-        const template = document.getElementById(templateId)
-        if (! template) {
-            throw new Error(`cannot find template with id: ${templateId}`)
-        }
-        recurse(template.content)
-    }
-
-    const $component = ({name, templateId, initializer, data} = {}) => {
-        if (! name) { throw new Error('Component definition must define a name') };
-        if (! templateId) {
-            templateId = name;
-        }
-        if (! initializer) {
-            initializer = () => {}
-        }
-        components[name] = {name, templateId, initializer, data};
-        addIdsToTemplate(templateId);
-    }
-
-    const $attributeDirective = ({test, processor, options} = {}) => {
-        if (! test) { throw new Error('Attribute directive definition must define a test') };
-        if (! processor) { throw new Error('Attribute directive definition must define a processor') };
-        /* unshift so last one wins when running attributeTest */
-        if (options?.generatesNodes) {
-            attributeNodeGeneratingDirectives.unshift({test, processor});
-        } else {
-            attributeDirectives.unshift({test, processor});
-        }
-    }
-
-    const scanElementProps = (element, data) => {
-        // scan for props
-        const props = {};
-        for (attribute of element.attributes) {
-            if (attribute.name.startsWith(':')) {
-                const key = attribute.name.substr(1);
-                props[key] = data[attribute.value];
+            const template = document.getElementById(templateId)
+            if (! template) {
+                throw new Error(`cannot find template with id: ${templateId}`)
             }
+            recurse(template.content)
         }
-        return { props }
-    }
 
-    const indexOf2 = (haystack, needle, pos = 0) => {
-        while (true) {
-            const index = haystack.indexOf(needle, pos);
-            if (index === -1) {
-                return -1;
+        const $component = ({name, templateId, initializer, data} = {}) => {
+            if (! name) { throw new Error('Component definition must define a name') };
+            if (! templateId) {
+                templateId = name;
             }
-            if (haystack[index + 1] === needle) {
-                return index;
+            if (! initializer) {
+                initializer = () => {}
             }
-            pos = index + 2;
-        }
-    }
-
-    const evaluate = (data, expression) => {
-        const keys = []
-        const values = []
-        for (datumKey in data) {
-            keys.push(datumKey)
-            values.push(data[datumKey])
+            components[name] = {name, templateId, initializer, data, scratchboard: {}};
         }
 
-        const value = Function(...keys, `"use strict"; return ${expression}`)(...values)
-        return value
-    }
-
-    const processTextNode = (node, newNode, data) => {
-        let text = '';
-        let pos = 0;
-        while (true) {
-            const leftBraces = indexOf2(node.textContent, '{', pos);
-            const rightBraces = indexOf2(node.textContent, '}', pos + 2);
-            if (leftBraces !== -1 && rightBraces !== -1) {
-                text += node.textContent.substr(pos, leftBraces - pos);
-                const expression = node.textContent.substr(leftBraces + 2, rightBraces - leftBraces - 2);
-                text += evaluate(data, expression)
-                pos += rightBraces + 2;
+        const $attributeDirective = ({test, processor, options} = {}) => {
+            if (! test) { throw new Error('Attribute directive definition must define a test') };
+            if (! processor) { throw new Error('Attribute directive definition must define a processor') };
+            /* unshift so last one wins when running attributeTest */
+            if (options?.generatesNodes) {
+                attributeNodeGeneratingDirectives.unshift({test, processor});
             } else {
-                text += node.textContent.substr(pos, node.textContent.length - pos);
-                newNode.textContent = text;
-                break;
+                attributeDirectives.unshift({test, processor});
+            }
+            if (options?.appEntry) {
+                attributeAppEntryDirectives.unshift({test, processor});
             }
         }
-        return newNode;
-    }
 
-    const processTemplateElement = (templateNode, data) => {
-        if (templateNode.nodeName === '#text') {
-            const newNode = templateNode.cloneNode()
-            return [processTextNode(templateNode, newNode, data)]
-        }
-
-        const templateNodeChildren = templateNode.nodeName === 'TEMPLATE' ? templateNode.content.childNodes : templateNode.childNodes
-
-        let newNodes;
-        let skipChildren = false;
-
-        /* first run directives that are capable of generating multiple nodes, $for is the only one at the moment */
-        for (attribute of templateNode.attributes) {
-            for (atrributeDirective of attributeNodeGeneratingDirectives) {
-                if (atrributeDirective.test(attribute)) {
-                    if ( newNodes !== undefined) {
-                        throw new Error('two new node generating directives ran, yikes!');
-                    }
-                    const { skipProcessingFurtherChildren, generatedNodes } = atrributeDirective.processor(
-                        { evaluate, processTemplateElement },
-                        templateNode, templateNodeChildren, attribute, data)
-                    newNodes = generatedNodes
-                    skipChildren ||= skipProcessingFurtherChildren
+        const indexOf2 = (haystack, needle, pos = 0) => {
+            while (true) {
+                const index = haystack.indexOf(needle, pos);
+                if (index === -1) {
+                    return -1;
                 }
+                if (haystack[index + 1] === needle) {
+                    return index;
+                }
+                pos = index + 2;
             }
         }
 
-        if (newNodes === undefined) {
-            newNodes = [templateNode.cloneNode()]
+        const evaluate = (data, expression) => {
+            const keys = []
+            const values = []
+            for (datumKey in data) {
+                keys.push(datumKey)
+                values.push(data[datumKey])
+            }
+
+            const value = Function(...keys, `"use strict"; return ${expression}`)(...values)
+            return value
         }
 
-        for (attribute of templateNode.attributes) {
-            for (atrributeDirective of attributeDirectives) {
-                if (atrributeDirective.test(attribute)) {
-                    for (const newNode of newNodes) {
-                        const { skipProcessingFurtherChildren } = atrributeDirective.processor(
-                            { evaluate, processTemplateElement },
-                            templateNode, templateNodeChildren, newNode, attribute, data)
-                        skipChildren ||= skipProcessingFurtherChildren
-                    }
+        const processTextNode = (node, newNode, data) => {
+            let text = '';
+            let pos = 0;
+            while (true) {
+                const leftBraces = indexOf2(node.textContent, '{', pos);
+                const rightBraces = indexOf2(node.textContent, '}', pos + 2);
+                if (leftBraces !== -1 && rightBraces !== -1) {
+                    text += node.textContent.substr(pos, leftBraces - pos);
+                    const expression = node.textContent.substr(leftBraces + 2, rightBraces - leftBraces - 2);
+                    text += evaluate(data, expression)
+                    pos += rightBraces + 2;
+                } else {
+                    text += node.textContent.substr(pos, node.textContent.length - pos);
+                    newNode.textContent = text;
                     break;
                 }
             }
+            return newNode;
         }
 
-        if (! skipChildren ) {
-            for (const newNode of newNodes) {
-                for (const childNode of templateNodeChildren) {
-                    const newChildren = processTemplateElement(childNode, data)
-                    for (const newChild of newChildren) {
-                        newNode.appendChild(newChild)
+        const processNodeGeneratingDirectives = (newNodes, templateNode, templateNodeChildren, data) => {
+            for (attribute of templateNode.attributes) {
+                for (atrributeDirective of attributeNodeGeneratingDirectives) {
+                    if (atrributeDirective.test(attribute)) {
+                        if ( newNodes.length !== 0 ) {
+                            throw new Error('two new node generating directives ran, yikes!');
+                        }
+                        return atrributeDirective.processor(
+                            { evaluate, processTemplateElement },
+                            templateNode, templateNodeChildren, newNodes, attribute, data)
                     }
                 }
             }
+            return true
         }
 
-        const provisionedNodes = newNodes.map(newNode => HTML_TAG_LIST.includes(newNodes[0].tagName) ? newNode : mount(newNode, data))
-
-        if (templateNode.nodeName === 'TEMPLATE') {
-            const childrenNodes = []
-            for (const node of provisionedNodes) {
-                for (const nodeChild of node.childNodes) {
-                    childrenNodes.push(nodeChild)
+        const processRegularDirectives = (directives, newNodes, templateNode, templateNodeChildren, data) => {
+            let processChildren = true;
+            for (attribute of templateNode.attributes) {
+                for (atrributeDirective of directives) {
+                    if (atrributeDirective.test(attribute)) {
+                        for (const newNode of newNodes) {
+                            const { skipProcessingFurtherChildren } = atrributeDirective.processor(
+                                { evaluate, processTemplateElement },
+                                templateNode, templateNodeChildren, newNode, attribute, data)
+                            processChildren &&= !skipProcessingFurtherChildren
+                        }
+                        break; // ensures each attribute matches only one directive
+                    }
                 }
             }
-            return childrenNodes
+            return processChildren
         }
 
-        return provisionedNodes
-    }
-
-    const processTemplate = (element, data) => {
-        if (element.nodeName === '#document-fragment') {
-            if (element.childElementCount !== 1) {
-                throw new Error('template elements must have one child')
+        const processTemplateElement = (templateNode, data) => {
+            if (templateNode.nodeName === '#text') {
+                const newNode = templateNode.cloneNode()
+                return [processTextNode(templateNode, newNode, data)]
             }
-            return processTemplate(element.children[0], data)
-        } else {
-            return processTemplateElement(element, data)
-        }
-    }
 
-    /* mounts a component */
-    const $mount = (element, data) => {
-        const component = components[element.localName];
-        if (! component) { throw new Error(`Undefined component: ${element.localName}`) }
-        const template = document.getElementById(component.templateId)
-        if (! template) {
-            throw new Error(`cannot find template with id: ${component.templateId}`)
-        }
-        debugger
-        const childElements = processTemplateElement(template, {...data, ...component.data})
-        for (child of childElements) {
-            element.appendChild(child)
-        }
-        return element
-    }
+            const templateNodeChildren = templateNode.nodeName === 'TEMPLATE' ? templateNode.content.childNodes : templateNode.childNodes
 
-    return {
-        $component,
-        $attributeDirective,
-        $mount,
-    }
-})()
+
+            let processChildren = true;
+            let newNodes = []
+
+            /* first execute directives that are capable of generating multiple nodes, $for is the only one at the moment */
+            processChildren &&= processNodeGeneratingDirectives(newNodes, templateNode, templateNodeChildren, data)
+
+            if (newNodes.length === 0) {
+                newNodes.push(templateNode.cloneNode())
+            }
+
+            processChildren &&= processRegularDirectives(attributeDirectives, newNodes, templateNode, templateNodeChildren, data)
+
+            if ( processChildren ) {
+                for (const newNode of newNodes) {
+                    for (const childNode of templateNodeChildren) {
+                        const newChildren = processTemplateElement(childNode, data)
+                        for (const newChild of newChildren) {
+                            newNode.appendChild(newChild)
+                        }
+                    }
+                }
+            }
+
+            const provisionedNodes = newNodes.map(newNode => HTML_TAG_LIST.includes(newNodes[0].tagName) ? newNode : mount(newNode, data))
+
+            if (templateNode.nodeName === 'TEMPLATE') {
+                const childrenNodes = []
+                for (const node of provisionedNodes) {
+                    for (const nodeChild of node.childNodes) {
+                        childrenNodes.push(nodeChild)
+                    }
+                }
+                return childrenNodes
+            }
+
+            return provisionedNodes
+        }
+
+        /* mounts a component */
+        const mount = (element, data) => {
+            const component = components[element.localName];
+            if (! component) { throw new Error(`Undefined component: ${element.localName}`) }
+            const template = document.getElementById(component.templateId)
+            if (! template) {
+                throw new Error(`cannot find template with id: ${component.templateId}`)
+            }
+            if (! component.scratchboard.setIds) {
+                component.scratchboard.setIds = true
+                addIdsToTemplate(component.templateId)
+            }
+            const scopedData = {...data, ...component.data}
+            const childElements = processTemplateElement(template, scopedData)
+            for (child of childElements) {
+                element.appendChild(child)
+            }
+            return element
+        }
+
+        /* mounts an app */
+        const $mount = (element, data) => {
+            const scopedData = {...data}
+            processRegularDirectives(attributeAppEntryDirectives, [element], element, [], scopedData)  // potentially adds stuff to scopeddata
+            mount(element, scopedData)
+        }
+
+        return {
+            $component,
+            $attributeDirective,
+            $mount,
+        }
+    })()
 </script>
 
 <script class="$attrDirective">
-$attributeDirective({
-    test: (attribute) => attribute.name.startsWith('$attr:'),
-    processor: ($, node, childNodes, newNode, attribute, data) => {
-        const attrKey = attribute.name.substr('$attr:'.length)
-        const expression = attribute.value
-        const value = $.evaluate(data, expression)
-        newNode.setAttribute(attrKey, value)
-        return {};
-    }
-})
+    $attributeDirective({
+        test: (attribute) => attribute.name.startsWith('$attr:'),
+        processor: ($, node, childNodes, newNode, attribute, data) => {
+            const attrKey = attribute.name.substr('$attr:'.length)
+            const expression = attribute.value
+            const value = $.evaluate(data, expression)
+            newNode.setAttribute(attrKey, value)
+            return {};
+        }
+    })
 </script>
 
 <script class="$dataDirective">
     $attributeDirective({
-        test: (attribute) => attribute.name.startsWith('$data:'),
+        options: { appEntry: true },
+        test: (attribute) => attribute.name == '$data',
         processor: ($, node, childNodes, newNode, attribute, data) => {
-            debugger
-            const keyName = attribute.name.substr('$event:'.length);
-            data[keyName] = attribute.value
+            const evaluatedData = $.evaluate(data, attribute.value)
+            for (const [key, value] of Object.entries(evaluatedData) ) {
+                data[key] = value
+            }
             return {};
         }
     })
 </script>
 
 <script class="$eventDirective">
-$attributeDirective({
-    test: (attribute) => attribute.name.startsWith('$event:'),
-    processor: ($, node, childNodes, newNode, attribute, data) => {
-        const eventName = attribute.name.substr('$event:'.length);
-        const handler = () => { $.evaluate(data, attribute.value) }
-        newNode.addEventListener(eventName, handler);
-        return {};
-    }
-})
+    $attributeDirective({
+        test: (attribute) => attribute.name.startsWith('$event:'),
+        processor: ($, node, childNodes, newNode, attribute, data) => {
+            const eventName = attribute.name.substr('$event:'.length);
+            const handler = () => { $.evaluate(data, attribute.value) }
+            newNode.addEventListener(eventName, handler);
+            return {};
+        }
+    })
 </script>
 
 <script class="$forDirective">
-$attributeDirective({
-    options: { generatesNodes: true },
-    test: (attribute) => attribute.name === '$for',
-    processor: ($, node, childNodes, attribute, data) => {
-        const [iter, op, ...c] = attribute.value.split(' ')
-        const collection = c.join(' ')
-        const generatedNodes = []
-        const buildChildren = (newData) => {
-            newData = { ...data }
-            newData[iter] = x
-            const newNode = node.cloneNode()
-            for (childElement of node.childNodes) {
-                const newChildren = $.processTemplateElement(childElement, newData)
-                for (const newChild of newChildren) {
-                    newNode.appendChild(newChild);
+    $attributeDirective({
+        options: { generatesNodes: true },
+        test: (attribute) => attribute.name === '$for',
+        processor: ($, node, childNodes, newNodes, attribute, data) => {
+            const [iter, op, ...c] = attribute.value.split(' ')
+            const collection = c.join(' ')
+            const buildChildren = (iterValue) => {
+                newData = { ...data }
+                newData[iter] = iterValue
+                const newNode = node.cloneNode()
+                for (childElement of node.childNodes) {
+                    const newChildren = $.processTemplateElement(childElement, newData)
+                    for (const newChild of newChildren) {
+                        newNode.appendChild(newChild);
+                    }
+                }
+                newNodes.push(newNode)
+            }
+            if (op === 'in') {
+                /* untested */
+                for (x in $.evaluate(data, collection)) {
+                    buildChildren(x)
+                }
+            } else if (op === 'of') {
+                for (x of $.evaluate(data, collection)) {
+                    buildChildren(x)
                 }
             }
-            generatedNodes.push(newNode)
-        }
-        if (op === 'in') {
-            /* untested */
-            for (x in $.evaluate(data, collection)) {
-                buildChildren(x)
-            }
-        } else if (op === 'of') {
-            for (x of $.evaluate(data, collection)) {
-                buildChildren(x)
-            }
-        }
 
-        return {skipProcessingFurtherChildren: true, generatedNodes}
-    }
-})
+            const processChildren = false;
+            return processChildren;
+        }
+    })
 </script>
 
 <script class="$ifDirective">
@@ -361,6 +357,8 @@ $attributeDirective({
     <attribute-test class="test"></attribute-test>
     <h2>text interpolation</h2>
     <text-test class="test"></text-test>
+    <h2>data test</h2>
+    <data-test class="test" $data="{colorBlue: 'blue'}"></data-test>
     <h2>$if</h2>
     <if-test class="test"></if-test>
     <h2>$if $else-if $else</h2>
@@ -371,16 +369,16 @@ $attributeDirective({
     <event-test class="test"></event-test>
 </body>
 
-<template id="template-test">
-    <div>
-        Just see this
-    </div>
-</template>
 <script class="template-test">
     $component({
         name: 'template-test'
     })
 </script>
+<template id="template-test">
+    <div>
+        Just see this
+    </div>
+</template>
 
 <template id="attribute-test">
     <div>
@@ -404,6 +402,23 @@ $attributeDirective({
 <script class="test-test">
     $component({
         name: 'text-test'
+    })
+</script>
+
+<template id="data-test">
+    <div>
+        green is {{ colorGreen }}
+    </div>
+    <div>
+        blue is {{ colorBlue }}
+    </div>
+</template>
+<script class="data-test">
+    $component({
+        name: 'data-test',
+        data: {
+            colorGreen: 'green'
+        }
     })
 </script>
 
@@ -482,6 +497,8 @@ $attributeDirective({
             colorRed: 'red'
         };
         const tests = document.getElementsByClassName('test')
+        // $mount(tests[6], data)
+        // return
         for (test of tests) {
             $mount(test, data)
             console.log('mounted app', test)
