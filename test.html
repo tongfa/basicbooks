@@ -20,14 +20,30 @@
 
 <script class="framework">
     const { $component, $attributeDirective, $mount } = (function() {
+        /* finds index of two consecutive characters in string, i.e. `{{` */
+        const indexOf2 = (haystack, needle, pos = 0) => {
+            while (true) {
+                const index = haystack.indexOf(needle, pos);
+                if (index === -1) {
+                    return -1;
+                }
+                if (haystack[index + 1] === needle) {
+                    return index;
+                }
+                pos = index + 2;
+            }
+        }
+
         const HTML_TAG_LIST = [
-            'BODY', 'DIV', 'TEMPLATE', 'TABLE', 'TR', 'TH', 'TD', 'SPAN',
+            'BODY', 'DIV', 'TEMPLATE', 'TABLE', 'TR', 'TH', 'TD', 'SPAN', 'TBODY',
         ]
 
         const components = {}
         const attributeDirectives = []
         const attributeNodeGeneratingDirectives = []
         const attributeAppEntryDirectives = []
+        const needingRefresh = []
+        let refreshTask = null
 
         const addIdsToTemplate = (templateId) => {
             let idCount = 0;
@@ -45,15 +61,16 @@
             recurse(template.content)
         }
 
-        const $component = ({name, templateId, initializer, data} = {}) => {
+        const $component = (definition = {}) => {
+            const {name, templateId, initializer, data} = definition
             if (! name) { throw new Error('Component definition must define a name') };
             if (! templateId) {
-                templateId = name;
+                definition.templateId = name;
             }
             if (! initializer) {
-                initializer = () => {}
+                definition.initializer = () => {}
             }
-            components[name] = {name, templateId, initializer, data, scratchboard: {}};
+            components[name] = {...definition, $meta: {}};
         }
 
         const $attributeDirective = ({test, processor, options} = {}) => {
@@ -70,32 +87,61 @@
             }
         }
 
-        const indexOf2 = (haystack, needle, pos = 0) => {
-            while (true) {
-                const index = haystack.indexOf(needle, pos);
-                if (index === -1) {
-                    return -1;
-                }
-                if (haystack[index + 1] === needle) {
-                    return index;
-                }
-                pos = index + 2;
+        const findByAttr = (node, attr, attrValue) => {
+            if (node?.attributes?.[attr]?.value === attrValue) {
+                return node
+            }
+            if (node.tagName === 'TEMPLATE') {
+                return findByAttr(node.content, attr, attrValue)
+            }
+            for (const childNode of node.children) {
+                const found = findByAttr(childNode, attr, attrValue)
+                if (found) return found
             }
         }
 
-        const evaluate = (data, expression) => {
+        const executeRefreshes = () => {
+            refreshTask = null
+            for (const {ref, instance} of needingRefresh) {
+                const templateNode = findByAttr(instance.component.template, '$ref', ref)
+                const dirtyElement = findByAttr(instance.element, '$ref', ref)
+                while (dirtyElement.lastChild) {
+                    dirtyElement.removeChild(dirtyElement.lastChild)
+                }
+                const childElements = processTemplateElement(instance, templateNode)
+                for (child of childElements) {
+                    dirtyElement.appendChild(child)
+                }
+            }
+        }
+
+        const scheduleRefresh = (task) => {
+            needingRefresh.push(task)
+            if (! refreshTask ) {
+                refreshTask = setTimeout(executeRefreshes)
+            }
+        }
+
+        const evaluate = (instance, expression) => {
             const keys = []
             const values = []
-            for (datumKey in data) {
+            for (datumKey in instance.data) {
                 keys.push(datumKey)
-                values.push(data[datumKey])
+                const value = instance.data[datumKey]
+                values.push( typeof value === 'function' ? value.bind(instance.data) : value)
             }
 
-            const value = Function(...keys, `"use strict"; return ${expression}`)(...values)
-            return value
+            const refreshByRef = (ref) => {
+                scheduleRefresh({instance, ref})
+            }
+            keys.push('$refreshByRef')
+            values.push(refreshByRef)
+
+            const f = Function(...keys, `"use strict"; return ${expression}`)
+            return f(...values)
         }
 
-        const processTextNode = (node, newNode, data) => {
+        const processTextNode = (instance, node, newNode) => {
             let text = '';
             let pos = 0;
             while (true) {
@@ -104,7 +150,7 @@
                 if (leftBraces !== -1 && rightBraces !== -1) {
                     text += node.textContent.substr(pos, leftBraces - pos);
                     const expression = node.textContent.substr(leftBraces + 2, rightBraces - leftBraces - 2);
-                    text += evaluate(data, expression)
+                    text += evaluate(instance, expression)
                     pos += rightBraces + 2;
                 } else {
                     text += node.textContent.substr(pos, node.textContent.length - pos);
@@ -115,7 +161,8 @@
             return newNode;
         }
 
-        const processNodeGeneratingDirectives = (newNodes, templateNode, templateNodeChildren, data) => {
+        const processNodeGeneratingDirectives = (instance, newNodes, templateNode, templateNodeChildren) => {
+            const { data } = instance
             for (attribute of templateNode.attributes) {
                 for (atrributeDirective of attributeNodeGeneratingDirectives) {
                     if (atrributeDirective.test(attribute)) {
@@ -124,14 +171,15 @@
                         }
                         return atrributeDirective.processor(
                             { evaluate, processTemplateElement },
-                            templateNode, templateNodeChildren, newNodes, attribute, data)
+                            instance, templateNode, templateNodeChildren, newNodes, attribute)
                     }
                 }
             }
             return true
         }
 
-        const processRegularDirectives = (directives, newNodes, templateNode, templateNodeChildren, data) => {
+        const processRegularDirectives = (instance, directives, newNodes, templateNode, templateNodeChildren) => {
+            const { data } = instance
             let processChildren = true;
             for (attribute of templateNode.attributes) {
                 for (atrributeDirective of directives) {
@@ -139,7 +187,7 @@
                         for (const newNode of newNodes) {
                             const { skipProcessingFurtherChildren } = atrributeDirective.processor(
                                 { evaluate, processTemplateElement },
-                                templateNode, templateNodeChildren, newNode, attribute, data)
+                                instance, templateNode, templateNodeChildren, newNode, attribute)
                             processChildren &&= !skipProcessingFurtherChildren
                         }
                         break; // ensures each attribute matches only one directive
@@ -149,10 +197,13 @@
             return processChildren
         }
 
-        const processTemplateElement = (templateNode, data) => {
+        const processTemplateElement = (instance, templateNode) => {
+            const { data } = instance
             if (templateNode.nodeName === '#text') {
                 const newNode = templateNode.cloneNode()
-                return [processTextNode(templateNode, newNode, data)]
+                // newNode.setAttribute('$templateNodeId', newNode.id)
+                delete newNode.id
+                return [processTextNode(instance, templateNode, newNode)]
             }
 
             const templateNodeChildren = templateNode.nodeName === 'TEMPLATE' ? templateNode.content.childNodes : templateNode.childNodes
@@ -162,18 +213,21 @@
             let newNodes = []
 
             /* first execute directives that are capable of generating multiple nodes, $for is the only one at the moment */
-            processChildren &&= processNodeGeneratingDirectives(newNodes, templateNode, templateNodeChildren, data)
+            processChildren &&= processNodeGeneratingDirectives(instance, newNodes, templateNode, templateNodeChildren)
 
             if (newNodes.length === 0) {
-                newNodes.push(templateNode.cloneNode())
+                const newNode = templateNode.cloneNode()
+                // newNode.setAttribute('$templateNodeId', newNode.id)
+                delete newNode.id
+                newNodes.push(newNode)
             }
 
-            processChildren &&= processRegularDirectives(attributeDirectives, newNodes, templateNode, templateNodeChildren, data)
+            processChildren &&= processRegularDirectives(instance, attributeDirectives, newNodes, templateNode, templateNodeChildren)
 
             if ( processChildren ) {
                 for (const newNode of newNodes) {
                     for (const childNode of templateNodeChildren) {
-                        const newChildren = processTemplateElement(childNode, data)
+                        const newChildren = processTemplateElement(instance, childNode)
                         for (const newChild of newChildren) {
                             newNode.appendChild(newChild)
                         }
@@ -181,7 +235,7 @@
                 }
             }
 
-            const provisionedNodes = newNodes.map(newNode => HTML_TAG_LIST.includes(newNodes[0].tagName) ? newNode : mount(newNode, data))
+            const provisionedNodes = newNodes.map(newNode => HTML_TAG_LIST.includes(newNodes[0].tagName) ? newNode : mount(instance, newNode))
 
             if (templateNode.nodeName === 'TEMPLATE') {
                 const childrenNodes = []
@@ -197,19 +251,21 @@
         }
 
         /* mounts a component */
-        const mount = (element, data) => {
+        const mount = (element, parentInstanceData) => {
             const component = components[element.localName];
             if (! component) { throw new Error(`Undefined component: ${element.localName}`) }
-            const template = document.getElementById(component.templateId)
-            if (! template) {
+            const templateNode = document.getElementById(component.templateId)
+            if (! templateNode) {
                 throw new Error(`cannot find template with id: ${component.templateId}`)
             }
-            if (! component.scratchboard.setIds) {
-                component.scratchboard.setIds = true
+            if (! component.$meta.setIds) {
+                component.$meta.setIds = true
                 addIdsToTemplate(component.templateId)
+                component.template = templateNode
             }
-            const scopedData = {...data, ...component.data}
-            const childElements = processTemplateElement(template, scopedData)
+            const data = {...parentInstanceData, ...component.data }
+            const instance = { component, data, element, $meta: {} }
+            const childElements = processTemplateElement(instance, templateNode)
             for (child of childElements) {
                 element.appendChild(child)
             }
@@ -217,10 +273,10 @@
         }
 
         /* mounts an app */
-        const $mount = (element, data) => {
-            const scopedData = {...data}
-            processRegularDirectives(attributeAppEntryDirectives, [element], element, [], scopedData)  // potentially adds stuff to scopeddata
-            mount(element, scopedData)
+        const $mount = (element, parentData) => {
+            const preliminaryInstance = {data: parentData}
+            processRegularDirectives(preliminaryInstance, attributeAppEntryDirectives, [element], element, [])  // potentially adds stuff to preliminaryInstance.data
+            mount(element, preliminaryInstance.data)
         }
 
         return {
@@ -234,10 +290,10 @@
 <script class="$attrDirective">
     $attributeDirective({
         test: (attribute) => attribute.name.startsWith('$attr:'),
-        processor: ($, node, childNodes, newNode, attribute, data) => {
+        processor: ($, instance, node, childNodes, newNode, attribute) => {
             const attrKey = attribute.name.substr('$attr:'.length)
             const expression = attribute.value
-            const value = $.evaluate(data, expression)
+            const value = $.evaluate(instance, expression)
             newNode.setAttribute(attrKey, value)
             return {};
         }
@@ -248,10 +304,10 @@
     $attributeDirective({
         options: { appEntry: true },
         test: (attribute) => attribute.name == '$data',
-        processor: ($, node, childNodes, newNode, attribute, data) => {
-            const evaluatedData = $.evaluate(data, attribute.value)
+        processor: ($, instance, node, childNodes, newNode, attribute) => {
+            const evaluatedData = $.evaluate(instance, attribute.value)
             for (const [key, value] of Object.entries(evaluatedData) ) {
-                data[key] = value
+                instance.data[key] = value
             }
             return {};
         }
@@ -261,9 +317,10 @@
 <script class="$eventDirective">
     $attributeDirective({
         test: (attribute) => attribute.name.startsWith('$event:'),
-        processor: ($, node, childNodes, newNode, attribute, data) => {
+        processor: ($, instance, node, childNodes, newNode, attribute) => {
+            const { data } = instance
             const eventName = attribute.name.substr('$event:'.length);
-            const handler = () => { $.evaluate(data, attribute.value) }
+            const handler = () => { $.evaluate(instance, attribute.value) }
             newNode.addEventListener(eventName, handler);
             return {};
         }
@@ -274,15 +331,17 @@
     $attributeDirective({
         options: { generatesNodes: true },
         test: (attribute) => attribute.name === '$for',
-        processor: ($, node, childNodes, newNodes, attribute, data) => {
+        processor: ($, parentInstance, node, childNodes, newNodes, attribute) => {
             const [iter, op, ...c] = attribute.value.split(' ')
             const collection = c.join(' ')
             const buildChildren = (iterValue) => {
-                newData = { ...data }
-                newData[iter] = iterValue
+                const instance = { ...parentInstance, data: { ...parentInstance.data}  }
+                instance.data[iter] = iterValue
                 const newNode = node.cloneNode()
+                // newNode.setAttribute('$templateNodeId', newNode.id)
+                delete newNode.id
                 for (childElement of node.childNodes) {
-                    const newChildren = $.processTemplateElement(childElement, newData)
+                    const newChildren = $.processTemplateElement(instance, childElement)
                     for (const newChild of newChildren) {
                         newNode.appendChild(newChild);
                     }
@@ -291,11 +350,11 @@
             }
             if (op === 'in') {
                 /* untested */
-                for (x in $.evaluate(data, collection)) {
+                for (x in $.evaluate(parentInstance, collection)) {
                     buildChildren(x)
                 }
             } else if (op === 'of') {
-                for (x of $.evaluate(data, collection)) {
+                for (x of $.evaluate(parentInstance, collection)) {
                     buildChildren(x)
                 }
             }
@@ -311,12 +370,12 @@
     const $ifScopes = {}
     $attributeDirective({
         test: (attribute) => ['$if', '$else-if', '$else'].indexOf(attribute.name) > -1,
-        processor: ($, node, childNodes, newNode, attribute, data) => {
+        processor: ($, instance, node, childNodes, newNode, attribute) => {
             const scope = node.parentElement.id
             const expression = attribute.value
             switch(attribute.name) {
                 case '$if': {
-                    const value = $.evaluate(data, expression)
+                    const value = $.evaluate(instance, expression)
                     $ifScopes[scope] = { value }
                     return value ? {} : {skipProcessingFurtherChildren: true}
                 }
@@ -327,7 +386,7 @@
                     if ($ifScopes[scope].value) {
                         return {skipProcessingFurtherChildren: true};
                     }
-                    const value = $.evaluate(data, expression)
+                    const value = $.evaluate(instance, expression)
                     $ifScopes[scope].value ||= value
                     return value ? {} : {skipProcessingFurtherChildren: true}
                 }
@@ -367,6 +426,8 @@
     <for-test class="test"></for-test>
     <h2>click</h2>
     <event-test class="test"></event-test>
+    <h2>change data</h2>
+    <change-data-test class="test"></change-data-test>
 </body>
 
 <script class="template-test">
@@ -380,6 +441,7 @@
     </div>
 </template>
 
+<!-- /* intentionally template followed by script to test both orders work */ -->
 <template id="attribute-test">
     <div>
         <div $attr:class="'marked'">this should be bolder and red</div>
@@ -393,18 +455,27 @@
     })
 </script>
 
+<script class="test-test">
+    $component({
+        name: 'text-test',
+    })
+</script>
 <template id="text-test">
     <div>
         <div>{{ 'do you see what I see' }}</div>
         <div>my favorite color is {{ colorRed }}</div>
     </div>
 </template>
-<script class="test-test">
+
+<script class="data-test">
+    /* note template expects colorBlue to be defined in component tag */
     $component({
-        name: 'text-test'
+        name: 'data-test',
+        data: {
+            colorGreen: 'green'
+        }
     })
 </script>
-
 <template id="data-test">
     <div>
         green is {{ colorGreen }}
@@ -413,15 +484,13 @@
         blue is {{ colorBlue }}
     </div>
 </template>
-<script class="data-test">
+
+<script class="$if-test">
     $component({
-        name: 'data-test',
-        data: {
-            colorGreen: 'green'
-        }
+        name: 'if-test',
+        templateId: '$if-test'
     })
 </script>
-
 <template id="$if-test">
     <div>
         <span $if="true">see this</span>
@@ -429,13 +498,13 @@
         <span $else>and I should see this</span>
     </div>
 </template>
-<script class="$if-test">
+
+<script class="$if-$else-if-$else-test">
     $component({
-        name: 'if-test',
-        templateId: '$if-test'
+        name: 'if-else-if-else-test',
+        templateId: '$if-$else-if-$else-test'
     })
 </script>
-
 <template id="$if-$else-if-$else-test">
     <div>
         <div>
@@ -455,31 +524,19 @@
         </div>
     </div>
 </template>
-<script class="$if-$else-if-$else-test">
-    $component({
-        name: 'if-else-if-else-test',
-        templateId: '$if-$else-if-$else-test'
-    })
-</script>
 
-
-<template id="$for-test">
-    <div $for="count of [1, 2, 3, 4]">
-        I should see 4 of these, numero {{ count }}
-    </div>
-</template>
 <script>
     $component({
         name: 'for-test',
         templateId: '$for-test'
     })
 </script>
-
-<template id="$event-test">
-    <div>
-        <span $event:click="foo()">click this</span>
+<template id="$for-test">
+    <div $for="count of [1, 2, 3, 4]">
+        I should see 4 of these, numero {{ count }}
     </div>
 </template>
+
 <script>
     $component({
         name: 'event-test',
@@ -489,12 +546,37 @@
         },
     })
 </script>
-</body>
+<template id="$event-test">
+    <div>
+        <span $event:click="foo()">click this</span>
+    </div>
+</template>
+
+<script>
+    $component({
+        name: 'change-data-test',
+        data: {
+            somethingThatChanges: 1,
+            increment($refreshByRef) {
+                this.somethingThatChanges++
+                $refreshByRef('count')
+            },
+        },
+    })
+</script>
+<template id="change-data-test">
+    <div $ref="count">
+        {{ somethingThatChanges }}
+    </div>
+    <div $event:click="increment($refreshByRef)">
+        click this
+    </div>
+</template>
 
 <script>
     const start = () => {
         const data = {
-            colorRed: 'red'
+            colorRed: 'red',
         };
         const tests = document.getElementsByClassName('test')
         // $mount(tests[6], data)
