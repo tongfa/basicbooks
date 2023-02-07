@@ -15,6 +15,9 @@
         font-weight: bold;
         color: red;
     }
+    .hide {
+        display: none;
+    }
     </style>
 </head>
 
@@ -87,42 +90,44 @@
             }
         }
 
-        const findByAttr = (node, attr, attrValue) => {
+        const findElementsByAttr = (node, attr, attrValue) => {
+            const elementList = []
             if (node?.attributes?.[attr]?.value === attrValue) {
-                return node
+                return [node]
             }
             if (node.tagName === 'TEMPLATE') {
-                return findByAttr(node.content, attr, attrValue)
+                for (element of findElementsByAttr(node.content, attr, attrValue)) {
+                    elementList.push(element)
+                }
             }
             for (const childNode of node.children) {
-                const found = findByAttr(childNode, attr, attrValue)
-                if (found) return found
+                for (element of findElementsByAttr(childNode, attr, attrValue)) {
+                    elementList.push(element)
+                }
             }
+            return elementList
         }
 
-        const executeRefreshes = () => {
+        const executeTasks = () => {
             refreshTask = null
-            for (const {ref, instance} of needingRefresh) {
-                const templateNode = findByAttr(instance.component.template, '$ref', ref)
-                const dirtyElement = findByAttr(instance.element, '$ref', ref)
-                while (dirtyElement.lastChild) {
-                    dirtyElement.removeChild(dirtyElement.lastChild)
-                }
-                const childElements = processTemplateElement(instance, templateNode)
-                for (child of childElements) {
-                    dirtyElement.appendChild(child)
-                }
+            for (const {callback} of needingRefresh) {
+                callback()
             }
         }
 
         const scheduleRefresh = (task) => {
             needingRefresh.push(task)
             if (! refreshTask ) {
-                refreshTask = setTimeout(executeRefreshes)
+                refreshTask = setTimeout(executeTasks)
             }
         }
+        const flush = (ref) => new Promise(resolve => {
+            const instance = null
+            const callback = resolve
+            scheduleRefresh({instance, ref, callback})
+        })
 
-        const evaluate = (instance, expression) => {
+        const prepareEvaluate = (instance, extraContext) => {
             const keys = []
             const values = []
             for (datumKey in instance.data) {
@@ -131,13 +136,46 @@
                 values.push( typeof value === 'function' ? value.bind(instance.data) : value)
             }
 
+            for (datumKey in extraContext) {
+                keys.push(datumKey)
+                const value = extraContext[datumKey]
+                values.push(value)
+            }
+
             const refreshByRef = (ref) => {
-                scheduleRefresh({instance, ref})
+                scheduleRefresh({callback: () => {
+                    /* TODO only works for simple cases */
+                    const templateNode = findElementsByAttr(instance.component.template, '$ref', ref)[0]
+                    const dirtyElement = findElementsByAttr(instance.element, '$ref', ref)[0]
+                    while (dirtyElement.lastChild) {
+                        dirtyElement.removeChild(dirtyElement.lastChild)
+                    }
+                    const childElements = processTemplateElement(instance, templateNode)
+                    for (child of childElements) {
+                        dirtyElement.appendChild(child)
+                    }
+                }})
             }
             keys.push('$refreshByRef')
             values.push(refreshByRef)
 
+            keys.push('$flush')
+            values.push(flush)
+
+            return {keys, values}
+        }
+
+        const evaluateFunction = (instance, expression, extraContext = {}) => {
+            const { keys, values } = prepareEvaluate(instance, extraContext)
+            debugger
+            const f = Function(...keys, `${expression}`)
+            return f(...values)
+        }
+
+        const evaluate = (instance, expression, extraContext = {}) => {
+            const { keys, values } = prepareEvaluate(instance, extraContext)
             const f = Function(...keys, `"use strict"; return ${expression}`)
+
             return f(...values)
         }
 
@@ -251,7 +289,7 @@
         }
 
         /* mounts a component */
-        const mount = (element, parentInstanceData) => {
+        const mount = (parentInstance, element) => {
             const component = components[element.localName];
             if (! component) { throw new Error(`Undefined component: ${element.localName}`) }
             const templateNode = document.getElementById(component.templateId)
@@ -263,20 +301,66 @@
                 addIdsToTemplate(component.templateId)
                 component.template = templateNode
             }
-            const data = {...parentInstanceData, ...component.data }
+            const data = {...parentInstance.data, ...component.data }
             const instance = { component, data, element, $meta: {} }
             const childElements = processTemplateElement(instance, templateNode)
             for (child of childElements) {
                 element.appendChild(child)
             }
-            return element
+            return { instance, element }
+        }
+
+        const testHarness = (instance, element) => {
+            const $flush = flush;
+            const $findElementsByAttr = findElementsByAttr
+            const $instanceRoot = element
+            const component = components[element.localName];
+            const name = component.name
+            const tests = []
+            const $it = async (description, test) => {
+                tests.push({description, test})
+            }
+            const $expect = (value) => {
+                const check = (test, message) => {
+                    if (! test) {
+                        throw new Error(message)
+                    }
+                }
+                const toEqual = (val) => check(val === value, `${value} does not equal ${val}`)
+                const expectation = {
+                    toEqual
+                }
+                return expectation
+            }
+            const $_run = async () => {
+                const errors = []
+                for(__test of tests) {
+                    try {
+                        await __test.test()
+                    } catch (e) {
+                        console.warn('test failure:', test.description, e)
+                        errors.push(e)
+                    }
+                }
+                const errorCount = errors.length
+                return { errorCount }
+            }
+            verify = component.verify ?
+                (async () => {
+                    component.verify($it, $expect, $findElementsByAttr, $instanceRoot, $flush)
+                    return $_run()
+                }) : () => Promise.resolve({ errorCount: 0})
+
+            return { name, verify }
         }
 
         /* mounts an app */
         const $mount = (element, parentData) => {
             const preliminaryInstance = {data: parentData}
             processRegularDirectives(preliminaryInstance, attributeAppEntryDirectives, [element], element, [])  // potentially adds stuff to preliminaryInstance.data
-            mount(element, preliminaryInstance.data)
+            const { instance } = mount(preliminaryInstance, element)
+
+            return testHarness(instance, element)
         }
 
         return {
@@ -410,24 +494,42 @@
     <h1 class="title">
         <div>Tests</div>
     </h1>
-    <h2>template test</h2>
-    <template-test class="test"></template-test>
-    <h2>attribute interpolation</h2>
-    <attribute-test class="test"></attribute-test>
-    <h2>text interpolation</h2>
-    <text-test class="test"></text-test>
-    <h2>data test</h2>
-    <data-test class="test" $data="{colorBlue: 'blue'}"></data-test>
-    <h2>$if</h2>
-    <if-test class="test"></if-test>
-    <h2>$if $else-if $else</h2>
-    <if-else-if-else-test class="test"></if-else-if-else-test>
-    <h2>$for</h2>
-    <for-test class="test"></for-test>
-    <h2>click</h2>
-    <event-test class="test"></event-test>
-    <h2>change data</h2>
-    <change-data-test class="test"></change-data-test>
+    <div class="test">
+        <h2>template test</h2>
+        <template-test></template-test>
+    </div>
+    <div class="test">
+        <h2>attribute interpolation</h2>
+        <attribute-test></attribute-test>
+    </div>
+    <div class="test">
+        <h2>text interpolation</h2>
+        <text-test></text-test>
+    </div>
+    <div class="test">
+        <h2>data test</h2>
+        <data-test $data="{colorBlue: 'blue'}"></data-test>
+    </div>
+    <div class="test">
+        <h2>$if</h2>
+        <if-test></if-test>
+    </div>
+    <div class="test">
+        <h2>$if $else-if $else</h2>
+        <if-else-if-else-test></if-else-if-else-test>
+    </div>
+    <div class="test">
+        <h2>$for</h2>
+        <for-test></for-test>
+    </div>
+    <div class="test">
+        <h2>click</h2>
+        <event-test></event-test>
+    </div>
+    <div class="test">
+        <h2>change data</h2>
+        <change-data-test></change-data-test>
+    </div>
 </body>
 
 <script class="template-test">
@@ -528,11 +630,19 @@
 <script>
     $component({
         name: 'for-test',
-        templateId: '$for-test'
+        templateId: '$for-test',
+        verifyX() {
+            $it('it has four lines', async () => {
+                const lines = $findElementsByAttr($instanceRoot, '$ref', 'line')
+                await $flush()
+                $expect(lines.length).toEqual(4)
+                $expect(lines[3].textContent.trim()).toEqual('I should see 4 of these, numero 4')
+            })
+        }
     })
 </script>
 <template id="$for-test">
-    <div $for="count of [1, 2, 3, 4]">
+    <div $ref="line" $for="count of [1, 2, 3, 4]">
         I should see 4 of these, numero {{ count }}
     </div>
 </template>
@@ -562,19 +672,30 @@
                 $refreshByRef('count')
             },
         },
+        verify($it, $expect, $findElementsByAttr, $instanceRoot, $flush) {
+            $it('increments when clicked', async () => {
+                const button = $findElementsByAttr($instanceRoot, '$ref', 'click-increment')[0]
+                button.click()
+                button.click()
+                button.click()
+                await $flush()
+                const count = $findElementsByAttr($instanceRoot, '$ref', 'count')[0]
+                $expect(count.textContent.trim()).toEqual('4')
+            })
+        }
     })
 </script>
 <template id="change-data-test">
     <div $ref="count">
         {{ somethingThatChanges }}
     </div>
-    <div $event:click="increment($refreshByRef)">
+    <div $ref="click-increment" $event:click="increment($refreshByRef)">
         click this
     </div>
 </template>
 
 <script>
-    const start = () => {
+    const start = async () => {
         const data = {
             colorRed: 'red',
         };
@@ -582,8 +703,12 @@
         // $mount(tests[6], data)
         // return
         for (test of tests) {
-            $mount(test, data)
-            console.log('mounted app', test)
+            const component = test.children[1]
+            const { verify, name } = $mount(component, data)
+            const { errorCount } = await verify()
+            if (errorCount === 0) {
+                test.classList.add('hide')
+            }
         }
     }
     start();
