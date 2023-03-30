@@ -356,6 +356,9 @@
 
         /* mounts an app */
         const $mount = (element, parentData) => {
+            if (!element) {
+                throw new Error('mounting invalid element')
+            }
             const preliminaryInstance = {data: parentData}
             processRegularDirectives(preliminaryInstance, attributeAppEntryDirectives, [element], element, [])  // potentially adds stuff to preliminaryInstance.data
             const { instance } = mount(preliminaryInstance, element)
@@ -694,24 +697,52 @@
     </div>
 </template>
 
+<script class="test-status">
+    $component({
+        name: 'test-status',
+        props: ['testStatus']
+    })
+</script>
+<template id="test-status">
+    <div>
+        <span $if="testStatus === 'success'">all tests passed</span>
+        <span $else-if="testStatus === 'failure'">tests failed</span>
+        <span $else>running</span>
+    </div>
+</template>
+
+<div>
+    <test-status $attr:status="testStatus"></test-status>
+</div>
+
 <script>
     const start = async () => {
+        let newStatus = 'success'
         const data = {
             colorRed: 'red',
         };
         const tests = document.getElementsByClassName('test')
         // $mount(tests[6], data)
         // return
+
         for (test of tests) {
             const component = test.children[1]
             const { verify, name } = $mount(component, data)
             const { errorCount } = await verify()
             if (errorCount === 0) {
                 test.classList.add('hide')
+            } else {
+                newStatus = 'failure'
             }
         }
+        testStatus = newStatus
+        console.log('status', testStatus)
+        const testStatusComponent = document.getElementsByTagName('test-status')[0];
+        $mount(testStatusComponent, {testStatus})
     }
+    let testStatus = 'running'
     start();
 </script>
+
 
 </html>
